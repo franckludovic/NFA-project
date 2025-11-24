@@ -5,7 +5,10 @@ class State:
     Represents one state in an NFA.
     Each state may have multiple transitions on different symbols.
     """
+    _counter = 0
     def __init__(self, is_accepting: bool = False):
+        self.id = State._counter
+        State._counter += 1
         self.is_accepting = is_accepting
 
         # transitions is a dictionary:

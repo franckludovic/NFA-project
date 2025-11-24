@@ -13,117 +13,157 @@ def postfix_to_nfa(postfix_regex: str) -> NFA:
         - '|' is union
         - '*' is kleene star (zero or more)
         - '+' is kleene plus (one or more)
+        - '?' is zero or one
+        - '&' is intersection
     """
 
-    # Stack used by Thompson's construction.
-    # Each entry is an NFA fragment.
     nfa_stack = []
 
-    # Process the postfix regex one character at a time
     for char in postfix_regex:
 
-
         # 1. OPERAND (a, b, c, ...)
-        # Create a simple fragment:
-        #   start --char--> accept
+        if char not in {'.', '|', '*', '+', '?', '&'}:
+            start = State()
+            accept = State(is_accepting=True)
+            start.add_transition(char, accept)
+            nfa_stack.append(NFA(start, accept))
 
-        if char not in {'.', '|', '*', '+'}:
-            start = State()                          # new start state
-            accept = State(is_accepting=True)        # new accept state
-            start.add_transition(char, accept)       # char transition start to accept
-            
-            nfa_stack.append(NFA(start, accept))     # push fragment onto the stack
-
-
-        # 2. OPERATORS
-
+        # 2. CONCATENATION
         elif char == '.':
-            nfa2 = nfa_stack.pop()                   # second fragment
-            nfa1 = nfa_stack.pop()                   # first fragment
+            nfa2 = nfa_stack.pop()
+            nfa1 = nfa_stack.pop()
 
-            # nfa1.accept is no longer the final accepting state
             nfa1.accept_state.is_accepting = False
-
-            # Add epsilon transition connecting the two fragments
             nfa1.accept_state.add_transition("eps", nfa2.start_state)
 
-            # Combined NFA start = nfa1.start, accept = nfa2.accept
-            new_nfa = NFA(start_state=nfa1.start_state,
-                          accept_state=nfa2.accept_state)
-
+            new_nfa = NFA(nfa1.start_state, nfa2.accept_state)
             nfa_stack.append(new_nfa)
 
 
+        # 3. UNION
         elif char == '|':
             nfa2 = nfa_stack.pop()
             nfa1 = nfa_stack.pop()
 
-            start = State()                          # new start state
-            accept = State(is_accepting=True)        # new accept state
+            start = State()
+            accept = State(is_accepting=True)
 
-            # New start branches into both fragments
             start.add_transition("eps", nfa1.start_state)
             start.add_transition("eps", nfa2.start_state)
 
-            # Neither old accept state is final anymore
             nfa1.accept_state.is_accepting = False
             nfa2.accept_state.is_accepting = False
 
-            # Both fragments connect into the new accept
             nfa1.accept_state.add_transition("eps", accept)
             nfa2.accept_state.add_transition("eps", accept)
 
-            new_nfa = NFA(start_state=start, accept_state=accept)
+            new_nfa = NFA(start, accept)
             nfa_stack.append(new_nfa)
 
-
+        # 4. KLEENE STAR (*)
         elif char == '*':
             nfa1 = nfa_stack.pop()
 
-            start = State()                          # new start state
-            accept = State(is_accepting=True)        # new accept state
+            start = State()
+            accept = State(is_accepting=True)
 
-            # Can skip the loop entirely
             start.add_transition("eps", nfa1.start_state)
             start.add_transition("eps", accept)
 
-            # nfa1.accept is no longer final
             nfa1.accept_state.is_accepting = False
-
-            # Loop back to start OR go to new accept
             nfa1.accept_state.add_transition("eps", nfa1.start_state)
             nfa1.accept_state.add_transition("eps", accept)
 
-            new_nfa = NFA(start_state=start, accept_state=accept)
+            new_nfa = NFA(start, accept)
             nfa_stack.append(new_nfa)
 
 
+        # 5. KLEENE PLUS (+)
         elif char == '+':
             nfa1 = nfa_stack.pop()
 
-            start = State()                          # new start state
-            accept = State(is_accepting=True)        # new accept state
+            start = State()
+            accept = State(is_accepting=True)
 
-            # Must enter nfa1 at least once
             start.add_transition("eps", nfa1.start_state)
 
-            # Loop for repeated repetitions
+            nfa1.accept_state.is_accepting = False
             nfa1.accept_state.add_transition("eps", nfa1.start_state)
-
-            # Exit after one or many repetitions
             nfa1.accept_state.add_transition("eps", accept)
 
-            # old accept no longer final
-            nfa1.accept_state.is_accepting = False
-
-            new_nfa = NFA(start_state=start, accept_state=accept)
+            new_nfa = NFA(start, accept)
             nfa_stack.append(new_nfa)
 
+        #  EX: a?  →  (a | ε)
+        elif char == '?':
+            nfa1 = nfa_stack.pop()
+
+            start = State()
+            accept = State(is_accepting=True)
+
+            # either skip or take nfa1
+            start.add_transition("eps", nfa1.start_state)
+            start.add_transition("eps", accept)
+
+            nfa1.accept_state.is_accepting = False
+            nfa1.accept_state.add_transition("eps", accept)
+
+            new_nfa = NFA(start, accept)
+            nfa_stack.append(new_nfa)
+
+        #  Build cross-product NFA
+        #  Accepts only if BOTH NFAs accept.
+        elif char == '&':
+            nfa2 = nfa_stack.pop()
+            nfa1 = nfa_stack.pop()
+
+            # Cross-product mapping (State1, State2) → NewState
+            state_map = {}
+
+            def get_pair_state(s1, s2):
+                if (s1, s2) not in state_map:
+                    state_map[(s1, s2)] = State()
+                return state_map[(s1, s2)]
+
+            # Start state is the pair (start1, start2)
+            start = get_pair_state(nfa1.start_state, nfa2.start_state)
+
+            # BFS queue
+            queue = [(nfa1.start_state, nfa2.start_state)]
+            visited = set(queue)
+
+            while queue:
+                s1, s2 = queue.pop(0)
+                combined_state = get_pair_state(s1, s2)
+
+                # Find all transitions possible
+                for label1, targets1 in s1.transitions.items():
+                    for label2, targets2 in s2.transitions.items():
+
+                        # Intersection requires same label (except epsilon)
+                        if label1 == label2:
+                            for t1 in targets1:
+                                for t2 in targets2:
+                                    ns = get_pair_state(t1, t2)
+                                    combined_state.add_transition(label1, ns)
+
+                                    if (t1, t2) not in visited:
+                                        visited.add((t1, t2))
+                                        queue.append((t1, t2))
+
+            # Accepting states = any pair where both are accepting
+            accept = State(is_accepting=True)
+
+            for (s1, s2), new_s in state_map.items():
+                if s1.is_accepting and s2.is_accepting:
+                    new_s.add_transition("eps", accept)
+
+            new_nfa = NFA(start, accept)
+            nfa_stack.append(new_nfa)
 
         else:
             raise ValueError(f"Unexpected character in postfix regex: {char}")
 
-    # At the end, there should be exactly one NFA on the stack
     if len(nfa_stack) != 1:
         raise ValueError("Invalid postfix expression: stack does not contain exactly one NFA at the end.")
 

@@ -1,14 +1,14 @@
-# taku
 from typing import Optional
 import argparse
 import sys
 
-# Import the project modules. If they are missing, show a friendly error.
+# Import project modules (original)
 try:
-    from src.preprocessor import insert_concatenation_operator
-    from src.parser import shunting_yard
+    from src.prepocessor import insert_concatenation_operator
+    from src.parser import regex_shunting_yard
     from src.converter import postfix_to_nfa
     from src.display import display_nfa
+    from src.nfa_dfa import nfa_to_dfa 
 except Exception as e:
     msg = (
         "Failed to import project modules from src/. Make sure your project has:\n"
@@ -16,100 +16,127 @@ except Exception as e:
         "  src/parser.py (shunting_yard)\n"
         "  src/converter.py (postfix_to_nfa)\n"
         "  src/display.py (display_nfa)\n\n"
-        "Original error: {}"
-    ).format(e)
+        f"Original error: {e}"
+    )
     raise ImportError(msg)
 
+# NEW IMPORT for NFA → DFA
+try:
+    from src.nfa_to_dfa import nfa_to_dfa
+except Exception:
+    print("[warning] nfa_to_dfa not found. DFA conversion will be unavailable.")
 
-def process_regex(regex: str, output_filename: str = "nfa_graph", show_steps: bool = False) -> None:
-    """
-    Run the full pipeline on a single regex and save the graph.
 
-    Parameters
-    ----------
-    regex : str
-        The raw regular expression provided by the user.
-    output_filename : str
-        Name for the output graph files (without extension).
-    show_steps : bool
-        If True, print the preprocessed and postfix representations.
+# GLOBAL: stores last built NFA
+LAST_NFA = None
+
+
+def process_regex(regex: str, output_filename: str = "nfa_graph", show_steps: bool = False):
     """
+    (unchanged) – Now additionally stores the resulting NFA for DFA conversion later.
+    """
+    global LAST_NFA
+
     if not regex:
         raise ValueError("Empty regular expression provided.")
 
-    # 1. Preprocess: insert explicit concatenation operators
-    try:
-        preprocessed = insert_concatenation_operator(regex)
-    except Exception as e:
-        print(f"[error] Preprocessing failed: {e}", file=sys.stderr)
-        raise
+    # 1. Preprocess
+    preprocessed = insert_concatenation_operator(regex)
 
-    # 2. Convert to postfix using shunting-yard
-    try:
-        postfix = shunting_yard(preprocessed)
-    except Exception as e:
-        print(f"[error] Parsing to postfix failed: {e}", file=sys.stderr)
-        raise
+    # 2. Convert to postfix
+    postfix = regex_shunting_yard(preprocessed)
 
-    # Print intermediate representations if requested
     if show_steps:
         print(f"Raw regex      : {regex}")
         print(f"Preprocessed   : {preprocessed}")
         print(f"Postfix        : {postfix}")
 
-    # 3. Build NFA from postfix
+    # 3. Build NFA
+    nfa = postfix_to_nfa(postfix)
+
+    # Save globally for DFA conversion
+    LAST_NFA = nfa
+
+    # 4. Display NFA
+    display_nfa(nfa, output_filename)
+
+    print(f"[ok] NFA rendered and saved as '{output_filename}'")
+
+
+def convert_last_nfa_to_dfa():
+    """
+    NEW – Converts stored NFA to DFA.
+    """
+    global LAST_NFA
+
+    if LAST_NFA is None:
+        print("[error] No NFA available. Build one first.")
+        return
+
+    print("[info] Converting NFA to DFA...")
+
     try:
-        nfa = postfix_to_nfa(postfix)
+        start_dfa, all_dfa_states = nfa_to_dfa(LAST_NFA)
     except Exception as e:
-        print(f"[error] Converting postfix to NFA failed: {e}", file=sys.stderr)
-        raise
+        print(f"[error] DFA conversion failed: {e}")
+        return
 
-    # 4. Display/render the NFA using graphviz
-    try:
-        display_nfa(nfa, output_filename)
-    except Exception as e:
-        print(
-            "[warning] display_nfa raised an exception. "
-            "Make sure graphviz (system tool) is installed and python graphviz is available.\n"
-            f"Original error: {e}",
-            file=sys.stderr,
-        )
-        raise
+    print("\n--- DFA States ---")
+    for st in all_dfa_states.values():
+        ids = sorted([s.id for s in st.nfa_states])
+        print(f"State {ids} (accept={st.is_accept})")
+        for sym, nxt in st.transitions.items():
+            nxt_ids = sorted([s.id for s in nxt.nfa_states])
+            print(f"  {sym} → {nxt_ids}")
 
-    print(f"[ok] NFA rendered and saved as files with base name: '{output_filename}'")
+    print("\n[ok] DFA successfully built (no image display yet).")
 
 
-def interactive_prompt() -> None:
-    """Run a small interactive loop requesting regex from the user."""
-    print("Regular Expression -> NFA Converter (interactive mode)")
+def interactive_prompt():
+    """
+    EXTENDED – includes new menu options for DFA.
+    """
+    print("Regular Expression -> NFA/DFA Tool (interactive mode)")
     print("Type 'quit' or empty input to exit.")
-    while True:
-        try:
-            regex = input("\nEnter a regular expression > ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nGoodbye.")
-            return
 
-        if not regex or regex.lower() in ("quit", "exit"):
+    while True:
+        print("\nOPTIONS:")
+        print("  1. Build NFA from regex")
+        print("  2. Convert last NFA to DFA")
+        print("  3. Enter new regex (restart)")
+        print("  4. Exit")
+
+        choice = input("\nSelect option > ").strip()
+
+        if choice in ("4", "quit", "exit", ""):
             print("Goodbye.")
             return
 
-        output = input("Output filename (default 'nfa_graph') > ").strip()
-        if not output:
-            output = "nfa_graph"
+        elif choice == "1" or choice == "3":
+            regex = input("Enter a regular expression > ").strip()
+            if not regex:
+                continue
 
-        show = input("Show preprocessing and postfix? [y/N] > ").strip().lower()
-        show_steps = show in ("y", "yes")
+            output = input("Output filename (default 'nfa_graph') > ").strip() or "nfa_graph"
 
-        try:
-            process_regex(regex, output, show_steps)
-        except Exception as e:
-            print(f"[error] Failed to process regex: {e}")
+            show = input("Show preprocessing and postfix? [y/N] > ").lower()
+            show_steps = show in ("y", "yes")
+
+            try:
+                process_regex(regex, output, show_steps)
+            except Exception as e:
+                print(f"[error] Failed: {e}")
+
+        elif choice == "2":
+            convert_last_nfa_to_dfa()
+
+        else:
+            print("[error] Invalid option")
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Convert a regular expression into an NFA and render it as a graph."
+        description="Convert a regular expression into an NFA and optionally a DFA."
     )
     parser.add_argument(
         "regex",
@@ -123,18 +150,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--output",
         type=str,
         default="nfa_graph",
-        help="Base name for output graph files (no extension). Default: 'nfa_graph'.",
+        help="Base name for output graph files.",
     )
     parser.add_argument(
         "-s",
         "--show-steps",
         action="store_true",
-        help="Print preprocessed and postfix representations.",
+        help="Print preprocessing and postfix.",
     )
     return parser
 
 
-def main(argv: Optional[list] = None) -> None:
+def main(argv: Optional[list] = None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
